@@ -3,11 +3,8 @@
 //
 
 #include "../include/utils.h"
-#include "../include/types/TBoolean.h"
-#include "../include/types/TCharacter.h"
-#include "../include/types/TNumber.h"
-#include "../include/types/TString.h"
 #include "../include/types/TArray.h"
+#include "../include/EventInfo.h"
 
 std::vector<std::string> skx::Utils::split(std::string base, std::string delimiter) {
     std::vector<std::string> final;
@@ -49,4 +46,30 @@ skx::Variable *skx::Utils::searchVar(skx::VariableDescriptor *descriptor, skx::C
     }
     return Utils::searchRecursive(descriptor->name, ctx);
 
+}
+
+std::string skx::Utils::getEventClassFromExpression(std::string content) {
+    for(auto& entry : eventMap) {
+        for (int i = 0; i < entry.len; ++i) {
+            if(entry.matches[i] == content) {
+                return std::string(entry.javaClass);
+            }
+        }
+    }
+    return "";
+}
+
+std::string skx::Utils::depListToString(std::vector<OperatorPart *> deps) {
+    std::string finalMessage;
+    for(auto & dep : deps) {
+        if(finalMessage.length() != 0) finalMessage += ' ';
+        if(dep->operatorType == LITERAL) {
+            finalMessage += static_cast<VariableValue*>(dep->value)->getStringValue();
+        }
+        if(dep->operatorType == VARIABLE) {
+            auto* v = static_cast<Variable*>(dep->value);
+            finalMessage += v->getValue()->getStringValue();
+        }
+    }
+    return finalMessage;
 }

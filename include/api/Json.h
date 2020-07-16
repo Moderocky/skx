@@ -7,7 +7,7 @@
 
 #include "../Instruction.h"
 #include "../TreeCompiler.h"
-#include "../../third-party/json/single_include/nlohmann/json.hpp"
+#include <nlohmann/json.hpp>
 
 namespace skx {
     class TJson : public VariableValue {
@@ -19,6 +19,7 @@ namespace skx {
 
         nlohmann::json value;
         VariableValue * copyValue() override;
+        std::string getStringValue() override;
     };
     class JsonInterface : public Execution {
     public:
@@ -29,7 +30,8 @@ namespace skx {
             REMOVE,
             CREATE_OBJECT,
             CREATE_ARRAY,
-            EXTRACT
+            EXTRACT,
+            HAS
         };
 
         JsonInterface(): Execution() {
@@ -41,6 +43,7 @@ namespace skx {
     class Json {
     public:
         static void compileRequest(std::string& content, Context *pContext, CompileItem *pItem);
+        static OperatorPart* compileCondition(std::string& content, Context *pContext, CompileItem *pItem);
     };
 }
 

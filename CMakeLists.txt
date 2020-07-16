@@ -10,63 +10,53 @@ endif ()
 
 set(CMAKE_CXX_STANDARD 14)
 
-set(SKX_SOURCES src/Script.cc
-        include/Script.h
+set(SKX_SOURCES
+        src/Script.cc
         src/Context.cc
-        include/Context.h
         src/Variable.cc
-        include/Variable.h
         src/Step.cc
-        include/Step.h
         src/PreParser.cc
-        include/PreParser.h
         src/utils.cc
-        include/utils.h
-        include/BaseTypeParser.h
         src/Function.cc
-        include/Function.h
         src/Instruction.cc
-        include/Instruction.h
         src/TreeCompiler.cc
-        include/TreeCompiler.h
         src/Executor.cc
-        include/Executor.h
-        include/BasicInstructions.h
-        src/BasicInstructions.cpp
+        src/BasicInstructions.cc
         src/RegexUtils.cc
-        include/RegexUtils.h
         src/Literal.cc
-        include/Literal.h
         src/types/TString.cc
-        include/types/TString.h
         src/types/TBoolean.cc
-        include/types/TBoolean.h
         src/types/TNumber.cc
-        include/types/TNumber.h
         src/types/TCharacter.cc
-        include/types/TCharacter.h
         src/types/TArray.cc
-        include/types/TArray.h
         src/api/Http.cpp
-        include/api/Http.h
         src/api/Json.cpp
-        include/api/Json.h
-        src/AsyncExecutor.cc
-        include/AsyncExecutor.h
-        src/ApiBridge.cc
-        include/ApiBridge.h )
+        src/Assembler.cc
+        src/Disassembler.cc)
 if (SKX_BUILD_API)
-    list(APPEND ${SKX_SOURCES} plugin/build/net_liz3_skx_SkxApi.h)
+    include_directories(plugin/build)
+    list(APPEND SKX_SOURCES
+            src/AsyncExecutor.cc
+            src/ApiBridge.cc
+            src/api/McEvents.cc
+            src/api/McEventValues.cc
+            src/api/PlayerEffects.cc
+            )
 endif ()
 
 add_library(skx SHARED
         ${SKX_SOURCES})
-
+include_directories(third-party/json/single_include)
 if (SKX_BUILD_API)
+   if(APPLE)
+       include_directories(/Library/Java/JavaVirtualMachines/jdk-12.0.2.jdk/Contents/Home/include /Library/Java/JavaVirtualMachines/jdk-12.0.2.jdk/Contents/Home/include/darwin)
+   elseif(UNIX)
     include_directories(/usr/lib/jvm/java-11-openjdk/include /usr/lib/jvm/java-11-openjdk/include/linux)
-endif ()
+   elseif(WIN32)
 
-if (NOT WIN32)
+    endif ()
+endif()
+if (NOT WIN32 AND NOT APPLE)
     #target_link_libraries(skx curl)
     target_link_libraries(skx pthread)
 endif ()

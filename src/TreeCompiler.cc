@@ -14,6 +14,11 @@
 #include "../include/types/TBoolean.h"
 #include "../include/api/Json.h"
 
+#ifdef SKX_BUILD_API
+#include "../include/api/McEvents.h"
+#include "../include/api/McEventValues.h"
+#include "../include/api/PlayerEffects.h"
+#endif
 #include <exception>
 #include <iostream>
 
@@ -22,6 +27,7 @@ skx::CompileItem *skx::TreeCompiler::compileTree(skx::PreParserItem *item, skx::
     CompileItem *root = new CompileItem();
     root->ctx = ctx;
     root->level = 0;
+    root->root = root;
     compiler.compileExpression(item, ctx, root);
     compiler.advance(root, item);
     return root;
@@ -42,6 +48,7 @@ skx::CompileItem *skx::TreeCompiler::compileTreeFunction(skx::PreParserItem *ite
         param->type = UNDEFINED;
         functionCtx->vars[param->name] = param;
     }
+    root->root = root;
     root->ctx = functionCtx;
     compiler.advance(root, item, true);
     func->functionItem = root;
@@ -52,7 +59,7 @@ skx::CompileItem *skx::TreeCompiler::compileTreeFunction(skx::PreParserItem *ite
 void skx::TreeCompiler::compileExpression(skx::PreParserItem *item, Context *context, CompileItem *target) {
 
     if (item->level == 0) {
-       compileTrigger(item->actualContent, context, target);
+        compileTrigger(item->actualContent, context, target);
     } else {
         auto actualContent = item->actualContent;
         if (actualContent == "else:") {
@@ -72,7 +79,8 @@ void skx::TreeCompiler::compileExpression(skx::PreParserItem *item, Context *con
             compileAssigment(actualContent, context, target);
         } else if (actualContent.find("loop") == 0) {
             compileLoop(actualContent, context, target);
-        } else if (actualContent.find("add") == 0 || actualContent.find("subtract") == 0 || actualContent.find("multiply") == 0 || actualContent.find("divide") == 0) {
+        } else if (actualContent.find("add") == 0 || actualContent.find("subtract") == 0 ||
+                   actualContent.find("multiply") == 0 || actualContent.find("divide") == 0) {
             compileOperator(actualContent, context, target);
         } else if (actualContent.find("return") == 0) {
             compileReturn(actualContent, context, target);
@@ -90,9 +98,11 @@ void skx::TreeCompiler::advance(skx::CompileItem *parent, skx::PreParserItem *pa
     thisCtx->global = parent->ctx->global;
     for (PreParserItem *item : parentItem->children) {
         CompileItem *next = new CompileItem();
+        next->root = parent->root;
         next->ctx = thisCtx;
         next->level = parent->level + 1;
         next->line = item->pos;
+        next->parent = parent;
         compileExpression(item, thisCtx, next);
         advance(next, item);
         parent->children.push_back(next);
@@ -106,6 +116,7 @@ skx::TreeCompiler::compileCondition(std::string &content, skx::Context *ctx, skx
     Comparison *currentOperator = nullptr;
     uint8_t state = 0;
     std::string last;
+    uint32_t len = isElseIf ? 7 : 3;
     for (int i = 0; i < spaceSplit.size(); ++i) {
         auto current = spaceSplit[i];
         if (current[current.length() - 1] == ':') {
@@ -120,11 +131,12 @@ skx::TreeCompiler::compileCondition(std::string &content, skx::Context *ctx, skx
 
             }
             if (current[current.length() - 1] == ':') current = current.substr(0, current.length() - 1);
-            TString* f = new TString(current.substr(1, current.length() - 2));
+            TString *f = new TString(current.substr(1, current.length() - 2));
             currentOperator->target = new OperatorPart(LITERAL, STRING, f, false);
             target->comparisons.push_back(currentOperator);
             state = 0;
             currentOperator = nullptr;
+
         }
         if ((current == "true" || current == "false") && state == 2) {
             currentOperator->target = new OperatorPart(LITERAL, BOOLEAN, new TBoolean(current == "true"), false);
@@ -132,6 +144,7 @@ skx::TreeCompiler::compileCondition(std::string &content, skx::Context *ctx, skx
             target->comparisons.push_back(currentOperator);
             state = 0;
             currentOperator = nullptr;
+
         }
         if (isNumber(current[0]) && state == 2) {
             currentOperator->target = skx::Literal::extractNumber(current);
@@ -155,56 +168,85 @@ skx::TreeCompiler::compileCondition(std::string &content, skx::Context *ctx, skx
                     target->comparisons.push_back(currentOperator);
                     state = 0;
                     currentOperator = nullptr;
+
                 }
             }
             delete descriptor;
         }
-        if (currentOperator != nullptr) {
-            if (current == "is") {
-                currentOperator->type = EQUAL;
-                if (state < 2) state++;
-            }
-            if (current == "equal") {
-                if ((currentOperator->type == SMALLER || currentOperator->type == BIGGER) && last == "or") {
-                    if (currentOperator->type == SMALLER) currentOperator->type = SMALLER_OR_EQUAL;
-                    if (currentOperator->type == BIGGER) currentOperator->type = BIGGER_OR_EQUAL;
-                    if (state < 2) state++;
 
-                }
+        if (state == 0) {
+            std::string x = content.substr(len);
+            OperatorPart *part = compileExecutionValue(x, ctx, target, isElseIf);
+            if (part != nullptr && currentOperator == nullptr) {
+                currentOperator = new Comparison();
+                currentOperator->source = part;
+                state++;
             }
-            if (current == "greater") {
-                currentOperator->type = BIGGER;
-                if (state < 2) state++;
+        } else if (state == 2) {
+            std::string x = content.substr(len);
+            if (x[x.length() - 1] == ':') {
+                x = x.substr(0, x.length() - 1);
             }
-            if (current == "smaller") {
-                currentOperator->type = SMALLER;
-                if (state < 2) state++;
-            }
-            if (current == "not") {
-                if (currentOperator->type == EQUAL) {
-                    currentOperator->type = NOT_EQUAL;
-                    if (state < 2) state++;
-                }
+            OperatorPart *part = compileExecutionValue(x, ctx, target, isElseIf);
+            if (part != nullptr) {
+                if (currentOperator == nullptr) currentOperator = new Comparison();
+                currentOperator->target = part;
+                target->comparisons.push_back(currentOperator);
+                state = 0;
+                currentOperator = nullptr;
+
             }
         }
+
+
+        if (current == "is") {
+            currentOperator->type = EQUAL;
+            if (state < 2) state++;
+        } else if (current == "equal") {
+            if ((currentOperator->type == SMALLER || currentOperator->type == BIGGER) && last == "or") {
+                if (currentOperator->type == SMALLER) currentOperator->type = SMALLER_OR_EQUAL;
+                if (currentOperator->type == BIGGER) currentOperator->type = BIGGER_OR_EQUAL;
+                if (state < 2) state++;
+
+            }
+        } else if (current == "greater") {
+            currentOperator->type = BIGGER;
+            if (state < 2) state++;
+        } else if (current == "smaller") {
+            currentOperator->type = SMALLER;
+            if (state < 2) state++;
+        } else if (current == "not") {
+            if (currentOperator->type == EQUAL) {
+                currentOperator->type = NOT_EQUAL;
+                if (state < 2) state++;
+            }
+        }
+
+
         last = current;
+        len += current.length() + 1;
+    }
+    if (currentOperator != nullptr) {
+        delete currentOperator;
     }
 }
 
-void skx::TreeCompiler::compileAssigment(const std::string& content, skx::Context *ctx, skx::CompileItem *target) {
+void skx::TreeCompiler::compileAssigment(const std::string &content, skx::Context *ctx, skx::CompileItem *target) {
     auto spaceSplit = skx::Utils::split(content.substr(4), " ");
     Assigment *assigment = nullptr;
     uint8_t step = 0;
+    uint32_t pos = 4;
     bool created = false;
     for (int i = 0; i < spaceSplit.size(); ++i) {
         auto current = spaceSplit[i];
-        if(step == 0 && !target->assignments.empty() && isOperator(current)) {
+        if (step == 0 && !target->assignments.empty() && isOperator(current)) {
             assigment = new Assigment();
-            auto* last = target->assignments[target->assignments.size() -1];
-            Variable* lastVar =  static_cast<Variable*>(last->target->value);
+            auto *last = target->assignments[target->assignments.size() - 1];
+            Variable *lastVar = static_cast<Variable *>(last->target->value);
             assigment->target = new OperatorPart(VARIABLE, lastVar->type, lastVar, lastVar->isDouble);
             step = 2;
             assigment->type = getOperator(current);
+            pos += current.length() + 1;
             continue;
         }
         if (current.find('"') == 0 && step == 2) {
@@ -216,28 +258,28 @@ void skx::TreeCompiler::compileAssigment(const std::string& content, skx::Contex
 
             }
             if (current[current.length() - 1] == ':') current = current.substr(0, current.length() - 1);
-            TString* f = new TString(current.substr(1, current.length() - 2));
+            TString *f = new TString(current.substr(1, current.length() - 2));
             assigment->source = new OperatorPart(LITERAL, STRING, f, false);
             target->assignments.push_back(assigment);
             step = 0;
             assigment = nullptr;
-        } else if((current == "true" || current == "false") && step == 2) {
+        } else if ((current == "true" || current == "false") && step == 2) {
             assigment->source = new OperatorPart(LITERAL, BOOLEAN, new TBoolean(current == "true"), false);
             target->assignments.push_back(assigment);
             assigment = nullptr;
             step = 0;
             created = false;
-        }
-        else if(isNumber(current[0])) {
+        } else if (isNumber(current[0])) {
 
-            OperatorPart* num = skx::Literal::extractNumber(current);
-            if(num != nullptr) {
+            OperatorPart *num = skx::Literal::extractNumber(current);
+            if (num != nullptr) {
                 assigment->source = num;
             }
             target->assignments.push_back(assigment);
             step = 0;
             assigment = nullptr;
-        }if (step == 2) {
+        }
+        if (step == 2) {
             auto funcCallMatches = skx::RegexUtils::getMatches(skx::functionCallPattern, content);
             if (!(funcCallMatches).empty()) {
                 auto entry = funcCallMatches[0];
@@ -249,7 +291,7 @@ void skx::TreeCompiler::compileAssigment(const std::string& content, skx::Contex
                 auto *call = new FunctionInvoker();
                 call->function = ctx->global->functions[name];
 
-                if(skx::Utils::trim(params).length() > 0) {
+                if (skx::Utils::trim(params).length() > 0) {
                     for (auto const &param : skx::Utils::split(params, ",")) {
                         auto trimmed = skx::Utils::trim(param);
                         auto descriptor = skx::Variable::extractNameSafe(trimmed);
@@ -267,8 +309,17 @@ void skx::TreeCompiler::compileAssigment(const std::string& content, skx::Contex
                 assigment = nullptr;
                 step = 0;
                 created = false;
+            } else {
+                std::string x = content.substr(pos);
+                OperatorPart* targetOperator = compileExecutionValue(x, ctx, target);
+                if(targetOperator != nullptr) {
+                    assigment->source = targetOperator;
+                    target->assignments.push_back(assigment);
+                    assigment = nullptr;
+                    step = 0;
+                    created = false;
+                }
             }
-
         }
 
         if (isVar(current)) {
@@ -288,7 +339,7 @@ void skx::TreeCompiler::compileAssigment(const std::string& content, skx::Contex
                 currentVar->accessType = descriptor->type;
                 currentVar->setValue(nullptr);
                 currentVar->ctx = targetCtx;
-             //   currentVar->created = created;
+                //   currentVar->created = created;
                 targetCtx->vars[descriptor->name] = currentVar;
             }
             delete descriptor;
@@ -320,24 +371,25 @@ void skx::TreeCompiler::compileAssigment(const std::string& content, skx::Contex
                 if (step < 2) step++;
             }
         }
+        pos += current.length() + 1;
     }
 }
 
 void skx::TreeCompiler::compileOperator(std::string &content, skx::Context *pContext, skx::CompileItem *pItem) {
     auto spaceSplit = skx::Utils::split(content, " ");
-    auto* assigment = new Assigment();
-   if(spaceSplit[0] == "add") assigment->type = ADD;
-   if(spaceSplit[0] == "subtract") assigment->type = SUBTRACT;
-   if(spaceSplit[0] == "multiply") assigment->type = MULTIPLY;
-   if(spaceSplit[0] == "divide") assigment->type = DIVIDE;
+    auto *assigment = new Assigment();
+    if (spaceSplit[0] == "add") assigment->type = ADD;
+    if (spaceSplit[0] == "subtract") assigment->type = SUBTRACT;
+    if (spaceSplit[0] == "multiply") assigment->type = MULTIPLY;
+    if (spaceSplit[0] == "divide") assigment->type = DIVIDE;
 
-   OperatorPart* source = skx::Literal::extractNumber(spaceSplit[1]);
-   auto varName = spaceSplit[2];
-   auto* var = skx::Utils::searchVar(skx::Variable::extractNameSafe(spaceSplit[3]), pContext);
-   if(var == nullptr) return;
-   assigment->source = source;
-   assigment->target = new OperatorPart(VARIABLE, var->type, var, var->isDouble);
-   pItem->assignments.push_back(assigment);
+    OperatorPart *source = skx::Literal::extractNumber(spaceSplit[1]);
+    auto varName = spaceSplit[2];
+    auto *var = skx::Utils::searchVar(skx::Variable::extractNameSafe(spaceSplit[3]), pContext);
+    if (var == nullptr) return;
+    assigment->source = source;
+    assigment->target = new OperatorPart(VARIABLE, var->type, var, var->isDouble);
+    pItem->assignments.push_back(assigment);
 }
 
 void skx::TreeCompiler::setupFunctionMeta(std::string &content, skx::Function *target) {
@@ -346,19 +398,19 @@ void skx::TreeCompiler::setupFunctionMeta(std::string &content, skx::Function *t
     name = name.substr(0, name.find_first_of(" \n\r\t\f\v("));
     size_t paramsStart = base.find_first_of('(');
     size_t paramsEnd = base.find_last_of(')');
-    if(base.find("::") != std::string::npos) {
+    if (base.find("::") != std::string::npos) {
         auto returnType = base.substr(base.find("::"));
-        returnType = skx::Utils::trim(returnType.substr(2, returnType.length() -3));
-        if(returnType == "text" || returnType == "string") {
+        returnType = skx::Utils::trim(returnType.substr(2, returnType.length() - 3));
+        if (returnType == "text" || returnType == "string") {
             target->returnType = STRING;
-        } else  if(returnType == "number" || returnType == "integer" || returnType == "int") {
+        } else if (returnType == "number" || returnType == "integer" || returnType == "int") {
             target->returnType = NUMBER;
         } else if (returnType == "bool" || returnType == "boolean") {
             target->returnType = BOOLEAN;
         }
     }
     std::string params = base.substr(paramsStart + 1, paramsEnd - paramsStart - 1);
-    if(!params.empty()) {
+    if (!params.empty()) {
         for (auto const &param : skx::Utils::split(params, ",")) {
             auto trimmed = skx::Utils::trim(param);
             VariableDescriptor *descriptor = new VariableDescriptor();
@@ -377,7 +429,6 @@ void skx::TreeCompiler::setupFunctionMeta(std::string &content, skx::Function *t
         }
     }
     target->name = name;
-    int x = 22;
 }
 
 void skx::TreeCompiler::compileExecution(std::string &content, skx::Context *context, skx::CompileItem *target) {
@@ -396,7 +447,7 @@ void skx::TreeCompiler::compileExecution(std::string &content, skx::Context *con
 
                 }
                 if (current[current.length() - 1] == ':') current = current.substr(0, current.length() - 1);
-                TString* f = new TString(current.substr(1, current.length() - 2));
+                TString *f = new TString(current.substr(1, current.length() - 2));
                 pr->dependencies.push_back(new OperatorPart(LITERAL, STRING, f, false));
 
             }
@@ -413,8 +464,8 @@ void skx::TreeCompiler::compileExecution(std::string &content, skx::Context *con
             }
             pos += current.length();
         }
-        if(pr->dependencies.size() > 0)
-           target->executions.push_back(pr);
+        if (pr->dependencies.size() > 0)
+            target->executions.push_back(pr);
         else
             delete pr;
         return;
@@ -430,30 +481,50 @@ void skx::TreeCompiler::compileExecution(std::string &content, skx::Context *con
             auto *call = new FunctionInvoker();
             call->function = context->global->functions[name];
 
-            if(params.length() > 0)
-            for (auto const &param : skx::Utils::split(params, ",")) {
-                auto trimmed = skx::Utils::trim(param);
-                auto descriptor = skx::Variable::extractNameSafe(trimmed);
-                Variable *var = nullptr;
-                if (descriptor->type == STATIC || descriptor->type == GLOBAL) {
-                    var = skx::Utils::searchRecursive(descriptor->name, context->global);
-                } else {
-                    var = skx::Utils::searchRecursive(descriptor->name, context);
-                }
-                if (!var) {
-                    std::cout << "[WARNING] Call Param not found: " << descriptor->name << " at: " << target->line
-                              << "\n";
+            if (params.length() > 0)
+                for (auto const &param : skx::Utils::split(params, ",")) {
+                    auto trimmed = skx::Utils::trim(param);
+                    auto descriptor = skx::Variable::extractNameSafe(trimmed);
+                    Variable *var = nullptr;
+                    if (descriptor->type == STATIC || descriptor->type == GLOBAL) {
+                        var = skx::Utils::searchRecursive(descriptor->name, context->global);
+                    } else {
+                        var = skx::Utils::searchRecursive(descriptor->name, context);
+                    }
+                    if (!var) {
+                        std::cout << "[WARNING] Call Param not found: " << descriptor->name << " at: " << target->line
+                                  << "\n";
+                        delete descriptor;
+                        continue;
+                    }
                     delete descriptor;
-                    continue;
+                    call->dependencies.push_back(new OperatorPart(VARIABLE, var->type, var, var->isDouble));
                 }
-                delete descriptor;
-                call->dependencies.push_back(new OperatorPart(VARIABLE, var->type, var, var->isDouble));
-            }
             target->executions.push_back(call);
         } else {
-            if(content.find("json") != std::string::npos) {
+            if (content.find("json") != std::string::npos) {
                 Json::compileRequest(content, context, target);
+                return;
             }
+#ifdef SKX_BUILD_API
+            CompileItem *t = target->root;
+            if(t->triggers.size() == 1 && t->triggers[0]->type == MC_EVENT) {
+                if (content == "cancel event" || content == "cancel the event") {
+                    CancelEvent *cancel = new CancelEvent();
+                    if (t->triggers.size() == 1) {
+                        cancel->ref = dynamic_cast<TriggerEvent *>(t->triggers[0]);
+                        target->executions.push_back(cancel);
+                        return;
+                    }
+                    delete cancel;
+                    return;
+                }
+                if(content.find("player") != std::string::npos) {
+                    Execution* out = PlayerAction::compilePlayerInstruction(content, context, target);
+                    if(out != nullptr) target->executions.push_back(out);
+                }
+            }
+#endif
         }
     }
 }
@@ -472,16 +543,16 @@ void skx::TreeCompiler::compileReturn(std::string &basicString, skx::Context *pC
 
             }
             if (current[current.length() - 1] == ':') current = current.substr(0, current.length() - 1);
-            TString* f = new TString(current.substr(1, current.length() - 2));
+            TString *f = new TString(current.substr(1, current.length() - 2));
             pItem->returner = new ReturnOperation();
             pItem->returner->targetReturnItem = new OperatorPart(LITERAL, STRING, f, false);
 
-        } else if(current == "true" || current == "false") {
-            TBoolean* f = new TBoolean(current == "true");
+        } else if (current == "true" || current == "false") {
+            TBoolean *f = new TBoolean(current == "true");
             pItem->returner = new ReturnOperation();
             pItem->returner->targetReturnItem = new OperatorPart(LITERAL, BOOLEAN, f, false);
 
-        }  else if(isNumber(current[0])) {
+        } else if (isNumber(current[0])) {
             pItem->returner = new ReturnOperation();
             pItem->returner->targetReturnItem = skx::Literal::extractNumber(current);
 
@@ -501,7 +572,7 @@ void skx::TreeCompiler::compileReturn(std::string &basicString, skx::Context *pC
     }
 }
 
-void skx::TreeCompiler::compileLoop(const std::string& content, skx::Context *ctx, skx::CompileItem *target) {
+void skx::TreeCompiler::compileLoop(const std::string &content, skx::Context *ctx, skx::CompileItem *target) {
 
     Loop *loop = new Loop();
     loop->rootItem = target;
@@ -557,38 +628,57 @@ bool skx::TreeCompiler::isNumber(char c) {
            c == '9';
 }
 
-bool skx::TreeCompiler::isOperator(std::string& in) {
+bool skx::TreeCompiler::isOperator(std::string &in) {
     return in == "+" || in == "-" || in == "*" || in == "/"
-    || in == "plus" || in == "minus" || in == "multiply" || in == "divided";
+           || in == "plus" || in == "minus" || in == "multiply" || in == "divided";
 }
 
-skx::InstructionOperator skx::TreeCompiler::getOperator(std::string& in) {
-    if(in == "+" || in == "plus") return ADD;
-    if(in == "-" || in == "minus") return SUBTRACT;
-    if(in == "*" || in == "multiply") return MULTIPLY;
-    if(in == "/" || in == "divided") return DIVIDE;
+skx::InstructionOperator skx::TreeCompiler::getOperator(std::string &in) {
+    if (in == "+" || in == "plus") return ADD;
+    if (in == "-" || in == "minus") return SUBTRACT;
+    if (in == "*" || in == "multiply") return MULTIPLY;
+    if (in == "/" || in == "divided") return DIVIDE;
     return NOT_EQUAL;
 }
 
 void skx::TreeCompiler::compileTrigger(std::string &content, skx::Context *context, skx::CompileItem *target) {
-    if(content == "on load:" || content == "on unload:") {
-        TriggerSignal* signal = new TriggerSignal();
-        signal->signalType =  content == "on unload:" ? TriggerSignal::UN_LOAD : TriggerSignal::LOAD;
+    if (content == "on load:" || content == "on unload:") {
+        TriggerSignal *signal = new TriggerSignal();
+        signal->signalType = content == "on unload:" ? TriggerSignal::UN_LOAD : TriggerSignal::LOAD;
         target->triggers.push_back(signal);
         return;
     }
-    if(content.find("command") == 0) {
+    if (content.find("command") == 0) {
         // COmmand
-    } else if (content.find("on ") == 0) {
-        Variable* playerName = new Variable();
-        playerName->name = "player-name";
-        playerName->contextValue = true;
-        playerName->type = STRING;
-        playerName->accessType = CONTEXT;
-        context->vars["player-name"] = playerName;
-
-        target->triggers.push_back(new TriggerEvent());
+    } else {
+        std::string type = skx::Utils::getEventClassFromExpression(content.substr(0, content.length() - 1));
+        if (type.length() == 0) {
+            std::cout << "Unknown event: " << content << " at: " << target->line << "\n";
+            return;
+        }
+        target->triggers.push_back(new TriggerEvent(type));
     }
+}
+
+skx::OperatorPart *
+skx::TreeCompiler::compileExecutionValue(std::string &content, skx::Context *ctx, skx::CompileItem *target,
+                                         bool isElseIf) {
+
+    if (content.find("json") != std::string::npos) {
+        return skx::Json::compileCondition(content, ctx, target);
+    }
+
+#ifdef SKX_BUILD_API
+    CompileItem *t = target->root;
+    if(t->triggers.size() == 1 && t->triggers[0]->type == MC_EVENT) {
+        if(content == "players name" || content == "player name") {
+            PlayerName* name = new PlayerName();
+            name->ref = dynamic_cast<TriggerEvent*>(t->triggers[0]);
+            return new OperatorPart(EXECUTION, UNDEFINED, name, false);
+        }
+    }
+#endif
+        return nullptr;
 }
 
 skx::CompileItem::~CompileItem() {
